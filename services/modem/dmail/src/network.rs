@@ -127,7 +127,8 @@ pub fn parse_signal(msg: &Message) -> Option<u8> {
         |value: i32, low: i32, high: i32| ((value - low) * 100 / (high - low)).clamp(0, 100) as u8;
     if let Some(lte) = msg.tlv(0x14).filter(|v| v.len() >= 4) {
         let rsrp = i16::from_le_bytes([lte[2], lte[3]]);
-        return Some(percent(rsrp.into(), -140, -98));
+        // 25 per 10 dB, for four bars at -128, -118, -108 and -98 dBm as on Android.
+        return Some(percent(rsrp.into(), -128, -88));
     }
     [0x13, 0x12]
         .iter()
@@ -344,8 +345,8 @@ mod tests {
 
     #[test]
     fn signal_prefers_lte_rsrp() {
-        // RSRP -119 dBm, halfway between -140 and -98.
-        let lte = Message::request(SIGNAL_INFO).with(0x14, [0xc0, 0xf6, 0x89, 0xff, 0, 0]);
+        // RSRP -108 dBm, halfway between -128 and -88.
+        let lte = Message::request(SIGNAL_INFO).with(0x14, [0xc0, 0xf6, 0x94, 0xff, 0, 0]);
         assert_eq!(parse_signal(&lte), Some(50));
         let gsm = Message::request(SIGNAL_INFO).with(0x12, [(-82i8) as u8]);
         assert_eq!(parse_signal(&gsm), Some(50));
