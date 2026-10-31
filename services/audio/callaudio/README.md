@@ -45,6 +45,7 @@ Session bus, name `org.callaudio`, object `/org/callaudio`, interface
 | `Active` | `b` | the card is on its voice call profile |
 | `Volume` | `u`, read-write | 0 to `VolumeMax`, highest is loudest; kept between calls |
 | `VolumeMax` | `u` | |
+| `Speaker` | `b`, read-write | the call plays on the speakers; each call starts on the earpiece, where the verb names `EarpieceRoute` and `SpeakerRoute` (`control=value` separated by `;`, applied in order) |
 | `Muted` | `b`, read-write | the other side hears nothing; only during a call, and each call starts unmuted |
 
 ```sh

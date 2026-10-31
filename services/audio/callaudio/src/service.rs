@@ -11,14 +11,61 @@ pub struct CallAudio {
     card: Card,
     /// The profile to go back to; set while call audio runs.
     previous: Option<String>,
+    /// The call plays on the speakers, not the earpiece.
+    speaker: bool,
 }
 
 impl CallAudio {
     pub fn new(card: Card) -> Self {
-        CallAudio {
+        let audio = CallAudio {
             card,
             previous: None,
+            speaker: false,
+        };
+        // Whatever an earlier run left: no call runs, and everything else
+        // plays on the speakers.
+        audio.session(false);
+        audio.route(&audio.card.speaker);
+        audio
+    }
+
+    /// Starts or stops the call's graphs, on a verb that leaves it to us.
+    fn session(&self, on: bool) {
+        if !self.card.session.is_empty()
+            && let Err(e) = native::set(self.card.index, &self.card.session, i64::from(on))
+        {
+            eprintln!("cannot switch the voice session: {e}");
         }
+    }
+
+    /// Applies a route's settings, in order; false if one failed.
+    fn route(&self, route: &str) -> bool {
+        let mut applied_all = true;
+        for setting in route.split(';').filter(|setting| !setting.is_empty()) {
+            let applied = setting
+                .rsplit_once('=')
+                .and_then(|(id, value)| Some((id, value.parse().ok()?)))
+                .ok_or_else(|| std::io::Error::other("not control=value"))
+                .and_then(|(id, value)| native::set(self.card.index, id, value));
+            if let Err(e) = applied {
+                eprintln!("cannot apply \"{setting}\": {e}");
+                applied_all = false;
+            }
+        }
+        applied_all
+    }
+
+    /// Plays the call on the earpiece; on the speakers if that fails, as a
+    /// silent call is worse than a loud one.
+    fn earpiece(&mut self) {
+        if !self.route(&self.card.earpiece) {
+            self.route(&self.card.speaker);
+            self.speaker = true;
+        }
+    }
+
+    fn has_earpiece(&self) -> bool {
+        !self.card.earpiece.is_empty() && !self.card.speaker.is_empty()
     }
 
     pub fn active(&self) -> bool {
@@ -28,8 +75,17 @@ impl CallAudio {
     /// Starts or stops call audio; true when it changed.
     pub fn follow(&mut self, call: bool) -> bool {
         match (call, self.previous.take()) {
-            (true, None) => match native::set_profile(self.card.index, VERB) {
+            (true, None) => {
+                // Before the graphs start, so speech never reaches the
+                // speakers; after, since the verb sets the amplifiers' volume.
+                self.speaker = !self.has_earpiece();
+                self.earpiece();
+                match native::set_profile(self.card.index, VERB) {
                 Ok(previous) => {
+                    if !self.speaker {
+                        self.earpiece();
+                    }
+                    self.session(true);
                     eprintln!(
                         "call audio on, card {} was on \"{previous}\"",
                         self.card.index
@@ -39,10 +95,13 @@ impl CallAudio {
                 }
                 Err(e) => {
                     eprintln!("cannot switch card {} to \"{VERB}\": {e}", self.card.index);
+                    self.route(&self.card.speaker);
                     false
                 }
-            },
+                }
+            }
             (false, Some(previous)) => {
+                self.session(false);
                 // The next recording starts with the microphone on.
                 if !self.card.mute.is_empty()
                     && let Err(e) = native::set(self.card.index, &self.card.mute, 1)
@@ -57,6 +116,8 @@ impl CallAudio {
                 } else {
                     eprintln!("call audio off, card back on \"{previous}\"");
                 }
+                self.route(&self.card.speaker);
+                self.speaker = false;
                 true
             }
             (_, previous) => {
@@ -109,6 +170,30 @@ impl CallAudio {
     fn volume_max(&self) -> fdo::Result<u32> {
         let control = self.control(&self.card.volume)?;
         Ok((control.max - control.min) as u32)
+    }
+
+    /// The call plays on the speakers. Each call starts on the earpiece, on a
+    /// card that has one.
+    #[zbus(property)]
+    fn speaker(&self) -> bool {
+        self.speaker || !self.has_earpiece()
+    }
+
+    #[zbus(property)]
+    fn set_speaker(&mut self, speaker: bool) -> fdo::Result<()> {
+        if !self.active() {
+            return Err(fdo::Error::Failed("no call".into()));
+        }
+        if !self.has_earpiece() {
+            return Err(fdo::Error::NotSupported("no earpiece route".into()));
+        }
+        self.speaker = speaker;
+        if speaker {
+            self.route(&self.card.speaker);
+        } else {
+            self.earpiece();
+        }
+        Ok(())
     }
 
     /// The microphone is off for the other side. Each call starts unmuted.

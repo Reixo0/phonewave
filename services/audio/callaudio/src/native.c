@@ -56,11 +56,13 @@ static void ucm_value(snd_use_case_mgr_t *uc, const char *name, const char *devi
 
 /*
  * The first card whose UCM configuration has `verb`, with the first
- * PlaybackVolume and CaptureSwitch its devices name. Reading values runs no
+ * PlaybackVolume, CaptureSwitch, EarpieceRoute, SpeakerRoute and SessionSwitch
+ * its devices name. Reading values runs no
  * sequences: the card's state stays the audio server's.
  */
 int callaudio_ucm_find(const char *verb, int *card, char *volume, size_t volume_len,
-		       char *mute, size_t mute_len)
+		       char *mute, size_t mute_len, char *earpiece, size_t earpiece_len,
+		       char *speaker, size_t speaker_len, char *session, size_t session_len)
 {
 	int index = -1;
 
@@ -79,11 +81,17 @@ int callaudio_ucm_find(const char *verb, int *card, char *volume, size_t volume_
 		}
 		copy(volume, volume_len, NULL);
 		copy(mute, mute_len, NULL);
+		copy(earpiece, earpiece_len, NULL);
+		copy(speaker, speaker_len, NULL);
+		copy(session, session_len, NULL);
 		snprintf(list_id, sizeof(list_id), "_devices/%s", verb);
 		n = snd_use_case_get_list(uc, list_id, &devices);
 		for (int i = 0; i < n; i += 2) {
 			ucm_value(uc, "PlaybackVolume", devices[i], verb, volume, volume_len);
 			ucm_value(uc, "CaptureSwitch", devices[i], verb, mute, mute_len);
+			ucm_value(uc, "EarpieceRoute", devices[i], verb, earpiece, earpiece_len);
+			ucm_value(uc, "SpeakerRoute", devices[i], verb, speaker, speaker_len);
+			ucm_value(uc, "SessionSwitch", devices[i], verb, session, session_len);
 		}
 		if (n > 0)
 			snd_use_case_free_list(devices, n);

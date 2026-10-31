@@ -48,6 +48,7 @@ async fn follow(audio: &InterfaceRef<CallAudio>, call: bool) {
         let audio = audio.get().await;
         let _ = audio.active_changed(emitter).await;
         let _ = audio.muted_changed(emitter).await;
+        let _ = audio.speaker_changed(emitter).await;
     }
 }
 

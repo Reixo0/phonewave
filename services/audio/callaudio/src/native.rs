@@ -11,6 +11,12 @@ unsafe extern "C" {
         volume_len: usize,
         mute: *mut c_char,
         mute_len: usize,
+        earpiece: *mut c_char,
+        earpiece_len: usize,
+        speaker: *mut c_char,
+        speaker_len: usize,
+        session: *mut c_char,
+        session_len: usize,
     ) -> c_int;
     fn callaudio_ctl_get(
         card: c_int,
@@ -47,17 +53,25 @@ fn text(buffer: &[u8]) -> String {
 }
 
 /// A sound card with a voice call verb, and the controls the verb's devices
-/// name: `PlaybackVolume` and `CaptureSwitch`, empty when it names none.
+/// name: `PlaybackVolume` and `CaptureSwitch`, empty when it names none; and
+/// `EarpieceRoute` and `SpeakerRoute`, the settings of each way to play a call,
+/// as `control=value` separated by `;`; `SessionSwitch`, the control that starts
+/// the call's graphs, when the verb leaves that to callaudio.
 #[derive(Debug)]
 pub struct Card {
     pub index: i32,
     pub volume: String,
     pub mute: String,
+    pub earpiece: String,
+    pub speaker: String,
+    pub session: String,
 }
 
 pub fn find_card(verb: &str) -> io::Result<Card> {
     let verb = c(verb)?;
     let (mut index, mut volume, mut mute) = (0, [0u8; 256], [0u8; 256]);
+    let (mut earpiece, mut speaker) = ([0u8; 512], [0u8; 512]);
+    let mut session = [0u8; 256];
     check(unsafe {
         callaudio_ucm_find(
             verb.as_ptr(),
@@ -66,12 +80,21 @@ pub fn find_card(verb: &str) -> io::Result<Card> {
             volume.len(),
             mute.as_mut_ptr().cast(),
             mute.len(),
+            earpiece.as_mut_ptr().cast(),
+            earpiece.len(),
+            speaker.as_mut_ptr().cast(),
+            speaker.len(),
+            session.as_mut_ptr().cast(),
+            session.len(),
         )
     })?;
     Ok(Card {
         index,
         volume: text(&volume),
         mute: text(&mute),
+        earpiece: text(&earpiece),
+        speaker: text(&speaker),
+        session: text(&session),
     })
 }
 
