@@ -129,7 +129,7 @@ def without_modules(payload, drop, join):
 
 def build(voice, recording, channels):
     rx, tx = voice['rx'], voice['tx']
-    drop = set(rx.get('drop', []))
+    drop = set(rx.get('drop', [])) | set(tx.get('drop', []))
     vsid = voice['vsid']
     graphs, commands = [], []
 
@@ -141,7 +141,8 @@ def build(voice, recording, channels):
         data = body(inband, oob)
         if op == GRAPH_OPEN:
             graph = len(graphs)
-            graphs.append(without_modules(data, drop, rx.get('join')) if graph == RX else data)
+            side = (rx, tx)[graph]
+            graphs.append(without_modules(data, drop, side['join']) if 'drop' in side else data)
             command(OPEN, graph)
         elif op == SET_CFG and dst == APM and graph is not None:
             command(SET, graph, APM, b''.join(param(m, p, v) for m, p, v in params(data)
