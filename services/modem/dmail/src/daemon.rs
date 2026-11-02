@@ -15,6 +15,7 @@ use async_executor::{LocalExecutor, Task};
 use async_io::Timer;
 use async_signal::Signals;
 use futures_lite::{StreamExt, future};
+use zbus::zvariant::OwnedFd;
 
 use crate::bus::{self, Bus, Command, Error, ModemProps, Reply, now};
 use crate::config::{self, Device, Settings};
@@ -347,6 +348,7 @@ impl Daemon<'_> {
             dns_default: None,
             calls: Vec::new(),
             ims: Registration::Off,
+            call_lock: None,
             _tasks: tasks,
         };
 
@@ -702,6 +704,13 @@ fn watch_sleep(ex: &LocalExecutor<'static>, tx: Sender<Event>) -> Task<()> {
     })
 }
 
+/// A logind lock on suspend, held while the descriptor is open.
+async fn inhibit_sleep(why: &str, mode: &str) -> zbus::Result<OwnedFd> {
+    let conn = zbus::Connection::system().await?;
+    let manager = login1::ManagerProxy::new(&conn).await?;
+    manager.inhibit("sleep", "dmail", why, mode).await
+}
+
 async fn follow_sleep(tx: &Sender<Event>) -> zbus::Result<()> {
     let conn = zbus::Connection::system().await?;
     let manager = login1::ManagerProxy::new(&conn).await?;
@@ -768,6 +777,8 @@ struct Life {
     /// The modem's calls, each with when it connected (0 until then).
     calls: Vec<(voice::Call, i64)>,
     ims: Registration,
+    /// logind's block lock on suspend, held while there are calls.
+    call_lock: Option<OwnedFd>,
     _tasks: Vec<Task<()>>,
 }
 
@@ -1079,10 +1090,24 @@ impl Life {
             }
         }
         self.calls = kept;
+        self.hold_sleep_for_calls().await;
         let calls = self.calls.iter().map(bus_call).collect();
         d.bus.publish_calls(calls);
         for call in &ended {
             d.bus.call_ended(&bus_call(call));
+        }
+    }
+
+    /// No suspend while a call rings or runs: asleep, the phone could not be
+    /// answered and the call's audio would stop.
+    async fn hold_sleep_for_calls(&mut self) {
+        if self.calls.is_empty() {
+            self.call_lock = None;
+        } else if self.call_lock.is_none() {
+            match inhibit_sleep("A call is on", "block").await {
+                Ok(lock) => self.call_lock = Some(lock),
+                Err(e) => log(format!("holding off suspend for a call: {e}")),
+            }
         }
     }
 
