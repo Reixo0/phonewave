@@ -25,7 +25,7 @@ use crate::qrtr::{Addr, Event as QrtrEvent, Lookup, Service};
 use crate::sim::{self, Pin};
 use crate::sms::store::Store;
 use crate::sms::{pdu, wms};
-use crate::{apn, data, modem, network, resolved, voice};
+use crate::{apn, data, login1, modem, network, resolved, voice};
 
 const SETUP: &str = "/usr/lib/dmail/modem-setup";
 const SETUP_TIMEOUT: Duration = Duration::from_secs(60);
@@ -54,6 +54,9 @@ const FIRST_RETRY: Duration = Duration::from_secs(2);
 const LAST_RETRY: Duration = Duration::from_secs(60);
 /// How long the radio stays off when it restarts.
 const RADIO_OFF: Duration = Duration::from_secs(2);
+/// How long a suspend waits for the modem to be quieted, within logind's
+/// delay limit.
+const SLEEP_READY_WAIT: Duration = Duration::from_secs(3);
 /// The modem's message format for GSM/UMTS point-to-point SMS.
 const FORMAT_GW_PP: u8 = 6;
 /// Reject causes after which the modem stops asking for packet service until
@@ -88,6 +91,9 @@ enum Event {
     Ims(Registration),
     /// The IPv4 routing table changed.
     Routes,
+    /// logind is about to suspend (true) or has resumed (false); the sender
+    /// says when the modem is ready for it.
+    Sleep(bool, Sender<()>),
     Command(Command),
     ModemGone,
     Retry,
@@ -319,6 +325,7 @@ impl Daemon<'_> {
             forward(self.ex, m.voice.clone(), Event::Voice, tx.clone()),
             watch,
         ];
+        tasks.push(watch_sleep(self.ex, tx.clone()));
         let ims_tx = tx.clone();
         match RouteWatch::new() {
             Ok(routes) => tasks.push(watch_routes(self.ex, routes, tx)),
@@ -396,6 +403,10 @@ impl Daemon<'_> {
                 Event::Voice(msg) => life.on_voice(self, msg).await,
                 Event::Ims(r) => life.on_ims(self, &mut props, r).await,
                 Event::Routes => life.follow_routes(self).await,
+                Event::Sleep(going, ready) => {
+                    life.prepare_for_sleep(self, &mut props, going).await;
+                    let _ = ready.try_send(());
+                }
                 Event::Command(Command::Restart(reply)) => {
                     if !life.calls.is_empty() {
                         let _ = reply.try_send(Err(Error::NotReady("a call is on".into())));
@@ -681,6 +692,47 @@ fn watch_routes(ex: &LocalExecutor<'static>, routes: RouteWatch, tx: Sender<Even
     })
 }
 
+/// Follows logind's suspends, holding a delay lock so that the modem is
+/// quiet before the phone sleeps (see `Life::prepare_for_sleep`).
+fn watch_sleep(ex: &LocalExecutor<'static>, tx: Sender<Event>) -> Task<()> {
+    ex.spawn(async move {
+        if let Err(e) = follow_sleep(&tx).await {
+            log(format!("following suspend: {e}"));
+        }
+    })
+}
+
+async fn follow_sleep(tx: &Sender<Event>) -> zbus::Result<()> {
+    let conn = zbus::Connection::system().await?;
+    let manager = login1::ManagerProxy::new(&conn).await?;
+    let mut sleeps = manager.receive_prepare_for_sleep().await?;
+    let inhibit = || manager.inhibit("sleep", "dmail", "Quieting the modem", "delay");
+    let mut lock = Some(inhibit().await?);
+    while let Some(signal) = sleeps.next().await {
+        let going = signal.args()?.start;
+        let (ready, done) = async_channel::bounded(1);
+        if tx.send(Event::Sleep(going, ready)).await.is_err() {
+            break;
+        }
+        if going {
+            // logind waits at most InhibitDelayMaxSec (5 s by default)
+            future::or(
+                async {
+                    let _ = done.recv().await;
+                },
+                async {
+                    Timer::after(SLEEP_READY_WAIT).await;
+                },
+            )
+            .await;
+            lock.take();
+        } else if lock.is_none() {
+            lock = Some(inhibit().await?);
+        }
+    }
+    Ok(())
+}
+
 struct Modem {
     dms: Rc<Client>,
     uim: Rc<Client>,
@@ -829,6 +881,22 @@ impl Life {
 
     /// Reads registration, and the signal when the radio changed; publishes
     /// Modem1.
+    /// Signal indications come at every level crossed, and while the phone
+    /// sleeps each would wake it: stop them before a suspend, and after it
+    /// start them again and read the signal and network the modem has now.
+    async fn prepare_for_sleep(&mut self, d: &Daemon<'_>, props: &mut ModemProps, going: bool) {
+        if let Err(e) = network::report_signal(&self.m.nas, !going).await {
+            log(format!("signal indications: {e}"));
+        }
+        if !going {
+            match network::signal(&self.m.nas).await {
+                Ok(signal) => props.signal = signal.unwrap_or(0),
+                Err(e) => log(format!("signal: {e}")),
+            }
+            self.refresh_network(d, props).await;
+        }
+    }
+
     async fn refresh_network(&mut self, d: &Daemon<'_>, props: &mut ModemProps) {
         match network::serving(&self.m.nas).await {
             Ok(s) => {

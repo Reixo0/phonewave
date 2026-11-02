@@ -289,6 +289,13 @@ pub async fn report_changes(nas: &Client) -> Result<(), Error> {
     nas.call(msg, TIMEOUT).await.map(drop)
 }
 
+/// Starts or stops the signal indications. They come at every level
+/// crossed, and while the phone sleeps each would wake it.
+pub async fn report_signal(nas: &Client, on: bool) -> Result<(), Error> {
+    let msg = Message::request(REGISTER_INDICATIONS).with(0x19, [u8::from(on)]);
+    nas.call(msg, TIMEOUT).await.map(drop)
+}
+
 /// The SIM's home network, MCC and MNC.
 pub async fn home_network(nas: &Client) -> Result<Option<(u16, u16)>, Error> {
     let reply = nas
