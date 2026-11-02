@@ -209,6 +209,13 @@ impl From<io::Error> for Error {
     }
 }
 
+/// DMAIL_TRACE_INDICATIONS=1 logs every indication, to see what the modem
+/// sends (and so what wakes the phone).
+fn trace_indications() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("DMAIL_TRACE_INDICATIONS").is_some())
+}
+
 /// One client of one service. Whoever waits on it, a request or
 /// `indication`, reads the socket and routes what arrives: responses to their
 /// requests, indications to the queue.
@@ -255,6 +262,9 @@ impl Client {
                     }
                 }
                 Kind::Indication => {
+                    if trace_indications() {
+                        eprintln!("dmail: indication port {} id 0x{:04x}", from.port, msg.id);
+                    }
                     let _ = self.queued.try_send(msg);
                 }
                 Kind::Request => {}
