@@ -206,6 +206,37 @@ braunctl shot ov50e40 photo.jpg
 it. `preview` and `shot` stream 60 frames first, so exposure, white balance
 and focus settle.
 
+## Webcam devices
+
+`braun-loopback` hands braun's cameras to apps that read a V4L2 webcam,
+such as Android's external camera HAL in Droidloom. It runs as the user,
+so the user's camera switches apply to it as one app, `braun-loopback`.
+Each `[[camera]]` in `/etc/braun/loopback.toml` names a v4l2loopback
+device and what it carries:
+
+```toml
+[[camera]]
+device = "/dev/video40"
+facing = "back"          # braun's main camera of this facing
+width = 1024
+height = 768
+rotation = 90            # what the frame needs clockwise to stand upright
+fps = 30                 # optional
+```
+
+The device carries MJPEG at that size. braun-loopback sets it and the
+kernel keeps it (`keep_format`), so readers find the format whether or not
+anyone watches. The camera opens only while a reader streams, as
+v4l2loopback's client usage event tells, and closes when the last one
+stops. The preview is scaled to the size by the nearest pixel, turned by
+`rotation` the way a phone's sensor sits (the way Android expects), and a
+front camera's is unmirrored. A camera braun refuses, switched off or taken
+by another app, streams black until the readers go.
+
+The device needs `exclusive_caps=1`, so readers see a capture device, and
+must not take another writer. The device's files load the module at boot
+with the labels the readers know the devices by.
+
 ## Devices
 
 | Device | Cameras |

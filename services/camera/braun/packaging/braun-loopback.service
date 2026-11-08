@@ -1,0 +1,13 @@
+[Unit]
+Description=braun's cameras as V4L2 webcam devices
+ConditionPathExists=/etc/braun/loopback.toml
+# Android's camera HAL looks at the devices when it starts.
+Before=droidloom.service
+
+[Service]
+ExecStart=/usr/bin/braun-loopback
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

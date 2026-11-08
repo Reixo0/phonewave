@@ -1,0 +1,18 @@
+# braun-loopback: the cameras Android (Droidloom) sees, as v4l2loopback
+# devices 40 and 41 (modprobe.d/braun-loopback.conf). Frames are turned
+# the way a phone's sensor sits; rotation is what they need clockwise to
+# stand upright.
+
+[[camera]]
+device = "/dev/video40"
+facing = "back"
+width = 1024
+height = 768
+rotation = 90
+
+[[camera]]
+device = "/dev/video41"
+facing = "front"
+width = 640
+height = 480
+rotation = 270

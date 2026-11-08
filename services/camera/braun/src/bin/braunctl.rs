@@ -188,7 +188,7 @@ fn preview(id: &str, file: &str) -> Result<(), String> {
     let mut session = Session::connect().map_err(|error| format!("braun: {error}"))?;
     let (pixels, width, height) = settled(&mut session, id)?;
     let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
-    for bgra in pixels.chunks_exact(4) {
+    for bgra in pixels.as_chunks::<4>().0 {
         ppm.extend_from_slice(&[bgra[2], bgra[1], bgra[0]]);
     }
     std::fs::write(file, ppm).map_err(|error| format!("{file}: {error}"))
