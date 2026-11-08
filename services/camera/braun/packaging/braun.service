@@ -9,6 +9,9 @@ ExecStart=/usr/bin/braun
 User=braun
 Group=braun
 SupplementaryGroups=video
+# /run/braun/streaming: who uses the camera, for the privacy indicator
+RuntimeDirectory=braun
+RuntimeDirectoryMode=0755
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=5

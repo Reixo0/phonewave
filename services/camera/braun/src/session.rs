@@ -4,6 +4,9 @@
 //!
 //! One camera streams at a time. The session that opens one last takes it:
 //! the one streaming hears `Failed(0, ..)` and closes.
+//!
+//! While a camera streams, `/run/braun/streaming` names the app and the
+//! camera, `<app>\t<camera>`, for the status bar's privacy indicator.
 
 use std::fs::File;
 use std::io::Write;
@@ -40,6 +43,10 @@ static HARDWARE: Mutex<()> = Mutex::new(());
 /// The session that should be streaming.
 static WANTED: AtomicU64 = AtomicU64::new(0);
 static SESSIONS: AtomicU64 = AtomicU64::new(1);
+/// Who streams, for the privacy indicator. Readable by everyone.
+const STATUS: &str = "/run/braun/streaming";
+/// The session `STATUS` is about, 0 for none.
+static STATUS_OWNER: AtomicU64 = AtomicU64::new(0);
 /// The cameras last found.
 static FOUND: Mutex<Option<Arc<Vec<Arc<Camera>>>>> = Mutex::new(None);
 
@@ -95,12 +102,14 @@ fn find(id: &str) -> Option<Arc<Camera>> {
     have(&cameras(false)).or_else(|| have(&cameras(true)))
 }
 
-/// Serves the client at the other end of `socket` until it leaves.
-pub fn start(socket: OwnedFd) -> std::io::Result<()> {
+/// Serves the client at the other end of `socket`, the app `app`, until it
+/// leaves.
+pub fn start(socket: OwnedFd, app: String) -> std::io::Result<()> {
     let session = Session {
         id: SESSIONS.fetch_add(1, Ordering::Relaxed),
         socket: Arc::new(socket),
         zoom: 1.0,
+        app,
     };
     std::thread::Builder::new()
         .name(format!("session {}", session.id))
@@ -152,6 +161,8 @@ struct Session {
     id: u64,
     socket: Arc<OwnedFd>,
     zoom: f32,
+    /// The app, as it names itself, for `STATUS`.
+    app: String,
 }
 
 /// Sends `reply` on `socket`; a client that left hears nothing.
@@ -242,6 +253,7 @@ impl Session {
         if proto::send(self.socket.as_fd(), &opened.encode(), &[shared.fd()]).is_err() {
             return Ok(Stop::Gone);
         }
+        let _streaming = Streaming::start(self.id, &self.app, id);
         let tone = Tone::new();
         let mut since_exposure = 0;
         let mut sequence = 0u64;
@@ -483,4 +495,39 @@ fn keep_raw(
         rendering.ccm.map(|value| value.to_string()).join(" "),
     );
     notes.write_all(text.as_bytes())
+}
+
+/// `STATUS` while a session streams; gone when it stops, unless another
+/// session took the camera and wrote its own.
+struct Streaming(u64);
+
+impl Streaming {
+    fn start(session: u64, app: &str, camera: &str) -> Self {
+        STATUS_OWNER.store(session, Ordering::SeqCst);
+        let partial = format!("{STATUS}.new");
+        let written = std::fs::write(&partial, format!("{app}\t{camera}\n"))
+            .and_then(|()| {
+                // braun's umask keeps its files private; this one is for all.
+                std::fs::set_permissions(
+                    &partial,
+                    std::os::unix::fs::PermissionsExt::from_mode(0o644),
+                )
+            })
+            .and_then(|()| std::fs::rename(&partial, STATUS));
+        if let Err(error) = written {
+            eprintln!("braun: {STATUS}: {error}");
+        }
+        Self(session)
+    }
+}
+
+impl Drop for Streaming {
+    fn drop(&mut self) {
+        if STATUS_OWNER
+            .compare_exchange(self.0, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            let _ = std::fs::remove_file(STATUS);
+        }
+    }
 }

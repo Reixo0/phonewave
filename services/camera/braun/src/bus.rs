@@ -28,10 +28,11 @@ impl Service {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> fdo::Result<OwnedFd> {
-        allowed(connection, &header).await?;
+        let pid = allowed(connection, &header).await?;
         let (ours, theirs) =
             proto::pair().map_err(|error| fdo::Error::Failed(error.to_string()))?;
-        session::start(ours).map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        session::start(ours, app_name(pid))
+            .map_err(|error| fdo::Error::Failed(error.to_string()))?;
         Ok(theirs.into())
     }
 
@@ -69,8 +70,9 @@ impl Service {
 }
 
 /// Whoever may open the camera nodes may connect: root, the `video` group,
-/// and the user of an active local session, as uaccess has it.
-async fn allowed(connection: &zbus::Connection, header: &Header<'_>) -> fdo::Result<()> {
+/// and the user of an active local session, as uaccess has it. Gives the
+/// caller's process id, when the bus knows it.
+async fn allowed(connection: &zbus::Connection, header: &Header<'_>) -> fdo::Result<Option<u32>> {
     let sender = header
         .sender()
         .ok_or_else(|| fdo::Error::AccessDenied("no sender".into()))?;
@@ -78,22 +80,32 @@ async fn allowed(connection: &zbus::Connection, header: &Header<'_>) -> fdo::Res
         .await?
         .get_connection_credentials(sender.clone().into())
         .await?;
+    let pid = credentials.process_id();
     if credentials.unix_user_id() == Some(0) {
-        return Ok(());
+        return Ok(pid);
     }
     if let (Some(video), Some(groups)) = (video_group(), credentials.unix_group_ids())
         && groups.contains(&video)
     {
-        return Ok(());
+        return Ok(pid);
     }
-    if let Some(pid) = credentials.process_id()
+    if let Some(pid) = pid
         && active_local(connection, pid).await.unwrap_or(false)
     {
-        return Ok(());
+        return Ok(Some(pid));
     }
     Err(fdo::Error::AccessDenied(
         "the cameras are for root, the video group and the active local session".into(),
     ))
+}
+
+/// The app behind a process, as it names itself (`comm`, which anyone may
+/// read, unlike the executable of another user's process).
+fn app_name(pid: Option<u32>) -> String {
+    pid.and_then(|pid| std::fs::read_to_string(format!("/proc/{pid}/comm")).ok())
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn video_group() -> Option<u32> {
