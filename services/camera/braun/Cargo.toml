@@ -10,12 +10,13 @@ license = "MIT"
 default = ["service"]
 # The daemon and braunctl. Without it the crate is the client side only,
 # for apps: the bus names, the session protocol and its shared frames.
-service = ["dep:image", "dep:serde", "dep:toml"]
+service = ["dep:image", "dep:serde", "dep:serde_json", "dep:toml"]
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }
 libc = "0.2"
 serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 toml = { version = "0.9", optional = true }
 zbus = "5.18"
 

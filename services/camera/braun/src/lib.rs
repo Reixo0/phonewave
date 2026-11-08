@@ -20,6 +20,8 @@ pub mod media;
 #[cfg(feature = "service")]
 pub mod photo;
 #[cfg(feature = "service")]
+pub mod privacy;
+#[cfg(feature = "service")]
 pub mod profile;
 #[cfg(feature = "service")]
 pub mod session;

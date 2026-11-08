@@ -6,7 +6,9 @@
 //! the one streaming hears `Failed(0, ..)` and closes.
 //!
 //! While a camera streams, `/run/braun/streaming` names the app and the
-//! camera, `<app>\t<camera>`, for the status bar's privacy indicator.
+//! camera, `<app>\t<camera>`, for the status bar's privacy indicator. An
+//! app the user switched the camera off for gets none (`privacy`), and one
+//! streaming stops within a second of the switch.
 
 use std::fs::File;
 use std::io::Write;
@@ -14,11 +16,13 @@ use std::ops::RangeInclusive;
 use std::os::fd::{AsFd, OwnedFd};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::camera::{self, Camera, Lens};
 use crate::device::Device;
 use crate::isp::{self, Exposure, Preview, Rendering, Tone};
 use crate::photo::{self, Group};
+use crate::privacy;
 use crate::proto::{self, Reply, Request, Shared};
 
 /// Frames the sensor takes to apply new exposure controls, plus one.
@@ -37,6 +41,8 @@ const FINE: u32 = 16;
 const TRAVEL: u32 = 1023;
 /// Preview slots: one being written, one with the client, one spare.
 const SLOTS: usize = 3;
+/// How often a streaming session looks at the privacy switches again.
+const SWITCHES_EVERY: Duration = Duration::from_secs(1);
 
 /// Held by the session streaming.
 static HARDWARE: Mutex<()> = Mutex::new(());
@@ -102,14 +108,15 @@ fn find(id: &str) -> Option<Arc<Camera>> {
     have(&cameras(false)).or_else(|| have(&cameras(true)))
 }
 
-/// Serves the client at the other end of `socket`, the app `app`, until it
-/// leaves.
-pub fn start(socket: OwnedFd, app: String) -> std::io::Result<()> {
+/// Serves the client at the other end of `socket`, the app `app` run by
+/// `user`, until it leaves.
+pub fn start(socket: OwnedFd, app: String, user: Option<u32>) -> std::io::Result<()> {
     let session = Session {
         id: SESSIONS.fetch_add(1, Ordering::Relaxed),
         socket: Arc::new(socket),
         zoom: 1.0,
         app,
+        user,
     };
     std::thread::Builder::new()
         .name(format!("session {}", session.id))
@@ -161,8 +168,10 @@ struct Session {
     id: u64,
     socket: Arc<OwnedFd>,
     zoom: f32,
-    /// The app, as it names itself, for `STATUS`.
+    /// The app, as it names itself, for `STATUS` and the switches.
     app: String,
+    /// The user running it, whose switches count.
+    user: Option<u32>,
 }
 
 /// Sends `reply` on `socket`; a client that left hears nothing.
@@ -220,6 +229,9 @@ impl Session {
     /// Streams camera `id` until the client asks for another, closes it or
     /// leaves, or another session takes the camera.
     fn stream(&mut self, id: &str) -> Result<Stop, String> {
+        if !privacy::camera_allowed(self.user, &self.app) {
+            return Err(format!("the camera is switched off for {}", self.app));
+        }
         WANTED.store(self.id, Ordering::SeqCst);
         let _hardware = HARDWARE
             .lock()
@@ -257,6 +269,7 @@ impl Session {
         let tone = Tone::new();
         let mut since_exposure = 0;
         let mut sequence = 0u64;
+        let mut switches_seen = Instant::now();
         loop {
             if WANTED.load(Ordering::SeqCst) != self.id {
                 tell(
@@ -264,6 +277,16 @@ impl Session {
                     &Reply::Failed(0, "another app took the camera".into()),
                 );
                 return Ok(Stop::Close);
+            }
+            if switches_seen.elapsed() >= SWITCHES_EVERY {
+                switches_seen = Instant::now();
+                if !privacy::camera_allowed(self.user, &self.app) {
+                    tell(
+                        &self.socket,
+                        &Reply::Failed(0, format!("the camera is switched off for {}", self.app)),
+                    );
+                    return Ok(Stop::Close);
+                }
             }
             loop {
                 let (request, fds) = match self.next(false) {

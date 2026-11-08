@@ -28,10 +28,10 @@ impl Service {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> fdo::Result<OwnedFd> {
-        let pid = allowed(connection, &header).await?;
+        let caller = allowed(connection, &header).await?;
         let (ours, theirs) =
             proto::pair().map_err(|error| fdo::Error::Failed(error.to_string()))?;
-        session::start(ours, app_name(pid))
+        session::start(ours, app_name(caller.pid), caller.user)
             .map_err(|error| fdo::Error::Failed(error.to_string()))?;
         Ok(theirs.into())
     }
@@ -69,10 +69,15 @@ impl Service {
     }
 }
 
+/// Who connected, as far as the bus knows.
+struct Caller {
+    pid: Option<u32>,
+    user: Option<u32>,
+}
+
 /// Whoever may open the camera nodes may connect: root, the `video` group,
-/// and the user of an active local session, as uaccess has it. Gives the
-/// caller's process id, when the bus knows it.
-async fn allowed(connection: &zbus::Connection, header: &Header<'_>) -> fdo::Result<Option<u32>> {
+/// and the user of an active local session, as uaccess has it.
+async fn allowed(connection: &zbus::Connection, header: &Header<'_>) -> fdo::Result<Caller> {
     let sender = header
         .sender()
         .ok_or_else(|| fdo::Error::AccessDenied("no sender".into()))?;
@@ -80,31 +85,50 @@ async fn allowed(connection: &zbus::Connection, header: &Header<'_>) -> fdo::Res
         .await?
         .get_connection_credentials(sender.clone().into())
         .await?;
-    let pid = credentials.process_id();
-    if credentials.unix_user_id() == Some(0) {
-        return Ok(pid);
+    let caller = Caller {
+        pid: credentials.process_id(),
+        user: credentials.unix_user_id(),
+    };
+    if caller.user == Some(0) {
+        return Ok(caller);
     }
     if let (Some(video), Some(groups)) = (video_group(), credentials.unix_group_ids())
         && groups.contains(&video)
     {
-        return Ok(pid);
+        return Ok(caller);
     }
-    if let Some(pid) = pid
+    if let Some(pid) = caller.pid
         && active_local(connection, pid).await.unwrap_or(false)
     {
-        return Ok(Some(pid));
+        return Ok(caller);
     }
     Err(fdo::Error::AccessDenied(
         "the cameras are for root, the video group and the active local session".into(),
     ))
 }
 
-/// The app behind a process, as it names itself (`comm`, which anyone may
-/// read, unlike the executable of another user's process).
+/// The app behind a process, as it names itself: the file name it was
+/// started as, else its `comm` (cut at 15 bytes). Anyone may read both,
+/// unlike the executable of another user's process.
 fn app_name(pid: Option<u32>) -> String {
-    pid.and_then(|pid| std::fs::read_to_string(format!("/proc/{pid}/comm")).ok())
-        .map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty())
+    let Some(pid) = pid else {
+        return "unknown".to_string();
+    };
+    let started_as = std::fs::read(format!("/proc/{pid}/cmdline"))
+        .ok()
+        .and_then(|cmdline| {
+            let first = cmdline.split(|&byte| byte == 0).next()?;
+            let name = String::from_utf8_lossy(first);
+            let name = name.rsplit('/').next()?.trim().to_string();
+            (!name.is_empty()).then_some(name)
+        });
+    started_as
+        .or_else(|| {
+            std::fs::read_to_string(format!("/proc/{pid}/comm"))
+                .ok()
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty())
+        })
         .unwrap_or_else(|| "unknown".to_string())
 }
 

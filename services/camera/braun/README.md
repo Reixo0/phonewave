@@ -188,6 +188,13 @@ message. `braun::client` speaks it; `braun::proto` has the encoding.
 One camera streams at a time. The session that opens one last takes it,
 and the one streaming hears `Failed(0, "another app took the camera")`.
 
+An app the user switched the camera off for hears `Failed(0, "the camera
+is switched off for <app>")`, on opening one or within a second while it
+streams. The switches are the user's own file,
+`/run/nx809j-privacy/users/<uid>.json`: `{"camera": false}` for every app,
+or `{"apps": {"camera": {"<app>": false}}}` for one, by the file name the
+app was started as. Without the file every app may stream.
+
 ```sh
 braunctl list
 braunctl cameras
