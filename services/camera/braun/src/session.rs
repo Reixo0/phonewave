@@ -217,7 +217,7 @@ impl Session {
                     }
                 },
                 Request::Zoom(zoom) => self.zoom = zoom,
-                Request::Shoot(shot) => tell(
+                Request::Shoot(shot, _) => tell(
                     &self.socket,
                     &Reply::Failed(shot, "no camera is open".into()),
                 ),
@@ -309,8 +309,8 @@ impl Session {
                             *held = false;
                         }
                     }
-                    Request::Shoot(shot) => {
-                        self.shoot(shot, fds, &mut device, exposure, &rendering)
+                    Request::Shoot(shot, size) => {
+                        self.shoot(shot, size, fds, &mut device, exposure, &rendering)
                             .map_err(failed)?;
                         // Back to the preview's exposure.
                         device
@@ -371,6 +371,7 @@ impl Session {
     fn shoot(
         &self,
         shot: u32,
+        size: Option<(u32, u32)>,
         fds: Vec<OwnedFd>,
         device: &mut Device,
         exposure: Exposure,
@@ -403,6 +404,7 @@ impl Session {
                 base,
                 exposure.digital,
                 zoom,
+                size,
                 &rendering,
                 jpeg,
             ) {
